@@ -80,7 +80,7 @@ if($cluster){
     $vms = Get-Cluster $cluster | Get-VM -Server $vcenter | Where-Object {$_.PowerState -eq "PoweredOn"}
 }
 else{
-    $vms = Get-VM -Server $vcenter | Where-Object {$_.PowerState -eq "PoweredOn" -and $_.name -like "I2V-*"}
+    $vms = Get-VM -Server $vcenter | Where-Object {$_.PowerState -eq "PoweredOn"}
 }
 
 #Filter based on vmcount/skip parameters. 
