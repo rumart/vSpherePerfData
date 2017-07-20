@@ -7,14 +7,15 @@
     .NOTES
         Author: Rudi Martinsen / Intility AS
         Created: 14/06-2017
-        Version 0.4.2
-        Revised: 12/07-2017
+        Version 0.5.0
+        Revised: 20/07-2017
         Changelog:
-        0.4.2 -- Fixed bug in companycode (aa362)
-        0.4.1 -- Fixed bug in hostname (aa362)
-        0.4.0 -- Changed to entitycount for pollingstat (aa362)
-        0.3.0 -- foreach and switch statement on stats (aa362)
-        0.2.1 -- Cleaned script and added description (aa362)
+        0.5.0 -- Moved companycode logic to a function
+        0.4.2 -- Fixed bug in companycode
+        0.4.1 -- Fixed bug in hostname
+        0.4.0 -- Changed to entitycount for pollingstat
+        0.3.0 -- foreach and switch statement on stats
+        0.2.1 -- Cleaned script and added description
     .PARAMETER Samples
         Script parameter for how many samples to fetch. Default of 15 will give last 5 minutes (15*20sec)
     .PARAMETER VCenter
@@ -48,6 +49,22 @@ function Get-DBTimestamp($timestamp = (get-date)){
         $timestamp = [datetime]::ParseExact($timestamp,'dd.MM.yyyy HH:mm:ss',$null)
     }
     return $([long][double]::Parse((get-date $($timestamp).ToUniversalTime() -UFormat %s)) * 1000 * 1000 * 1000)
+}
+
+function Get-CompanyCode ($vmname) {
+    $splitName = $vmname.split("-")[0]
+
+    if($splitName.Length -eq 2){
+        $companycode = $splitName
+    }
+    elseif($splitName.Length -gt 2){
+        $companycode = $splitName.Substring(0,2)
+        
+    }
+    else{
+        $companycode = $null
+    }
+    return $companycode
 }
 
 $start = Get-Date
@@ -108,18 +125,7 @@ foreach($vm in $vms){
     $hname = $vm.VMHost.Name
     
     #TODO: Move companycode logic to a function
-    $splitName = $vname.split("-")[0]
-
-    if($splitName.Length -eq 2){
-        $companycode = $splitName
-    }
-    elseif($splitName.Length -gt 2){
-        $companycode = $splitName.Substring(0,2)
-        
-    }
-    else{
-        $companycode = $null
-    }
+    
    
 
     #Get the stats
@@ -128,6 +134,7 @@ foreach($vm in $vms){
     foreach($stat in $stats){
         $instance = $stat.Instance
 
+        #Metrics will often have values for several instances per entity. Normally they will also have an aggregated instance. We're only interested in that one for now
         if($instance -or $instance -ne ""){
             continue
         }
