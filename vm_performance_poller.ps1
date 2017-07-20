@@ -7,9 +7,10 @@
     .NOTES
         Author: Rudi Martinsen / Intility AS
         Created: 14/06-2017
-        Version 0.6.1
+        Version 0.7.0
         Revised: 20/07-2017
         Changelog:
+        0.7.0 -- Added error handling on vCenter connection, added link to website
         0.6.1 -- Fixed missing unit conversion on cpu_ready
         0.6.0 -- Added override of Disk latency
         0.5.0 -- Moved companycode logic to a function
@@ -18,6 +19,8 @@
         0.4.0 -- Changed to entitycount for pollingstat
         0.3.0 -- foreach and switch statement on stats
         0.2.1 -- Cleaned script and added description
+    .LINK
+        http://www.rudimartinsen.com/2017/07/17/vsphere-performance-data-part-5-the-script/
     .PARAMETER Samples
         Script parameter for how many samples to fetch. Default of 15 will give last 5 minutes (15*20sec)
     .PARAMETER VCenter
@@ -34,6 +37,8 @@
         IP Address or hostname of the Influx Database server
     .PARAMETER DBServerPort
         TCP port for the DB server, Defaults to 8086 which is the default Influx port
+    .PARAMETER LogFile
+        Path to the logfile to write to
 #>
 param(
     $VCenter,
@@ -43,7 +48,8 @@ param(
     $Skip = 0, 
     $Targetname,
     $Dbserver,
-    $DbserverPort = 8086
+    $DbserverPort = 8086,
+    $LogFile
 )
 #Function to get the correct timestamp format for Influx
 function Get-DBTimestamp($timestamp = (get-date)){
@@ -68,6 +74,16 @@ function Get-CompanyCode ($vmname) {
     }
     return $companycode
 }
+
+if(!$LogFile){
+    $scriptDir = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent
+    $logDir = "$scriptdir\log"
+    if(!(Test-Path $logDir)){
+        New-Item -ItemType Directory -Path $logDir
+    }
+    $LogFile = "$logDir\vcpoll.log"
+}
+
 
 $start = Get-Date
 
@@ -94,8 +110,15 @@ if($targetname -eq $null -or $targetname -eq ""){
 }
 
 #Connect to vCenter
-$vc_conn = Connect-VIServer $vcenter
-$vcid = $vc_conn.InstanceUuid
+try {
+    $vc_conn = Connect-VIServer $vcenter -ErrorAction Stop -ErrorVariable vcerr  
+    $vcid = $vc_conn.InstanceUuid
+}
+catch {
+    Write-Output "$(Get-Date) : Couldn't connect to vCenter $vCenter. Script was started at $start" | Out-File $LogFile -Append
+    Write-Output "$(Get-Date) : Error message was: $($vcerr.message)" | Out-File $LogFile -Append
+    break
+}
 
 #Get VMs
 if($cluster){
