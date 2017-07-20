@@ -7,9 +7,10 @@
     .NOTES
         Author: Rudi Martinsen / Intility AS
         Created: 14/06-2017
-        Version 0.7.0
+        Version 0.7.1
         Revised: 20/07-2017
         Changelog:
+        0.7.1 -- Fixed bug in companycode
         0.7.0 -- Added error handling on vCenter connection, added link to website
         0.6.1 -- Fixed missing unit conversion on cpu_ready
         0.6.0 -- Added override of Disk latency
@@ -152,9 +153,8 @@ foreach($vm in $vms){
     $vproc = $vm.NumCpu
     $hname = $vm.VMHost.Name
     
-    #TODO: Move companycode logic to a function
-    
-   
+    #Get the Company Code from the vmname
+    $companycode = Get-CompanyCode -vmname $vname
 
     #Get the stats
     $stats = Get-Stat -Entity $vm -Realtime -MaxSamples $samples -Stat $metrics
