@@ -10,6 +10,7 @@
         Version 0.5.0
         Revised: 20/07-2017
         Changelog:
+        0.6.0 -- Added override of Disk latency
         0.5.0 -- Moved companycode logic to a function
         0.4.2 -- Fixed bug in companycode
         0.4.1 -- Fixed bug in hostname
@@ -78,6 +79,9 @@ $statInterval = 20
 #Variable to calculate correct CpuRdy value
 $cpuRdyInt = 200
 
+#Variable to calculate if Disk latency threshold. Used to override very high latency caused by snapshot removal
+#365 days * 24 hours * 60 minutes * 60 seconds * 1000 = x ms
+$latThreshold = 365 * 24 * 60 * 60 * 1000
 #Set targetname if omitted as a script parameter
 if($targetname -eq $null -or $targetname -eq ""){
     if($cluster){
@@ -156,7 +160,7 @@ foreach($vm in $vms){
             "mem.usage.average" {$measurement = "mem_usage" }
             "net.received.average"  {$measurement = "net_through_receive"}
             "net.transmitted.average"  {$measurement = "net_through_transmit"}
-            "disk.maxtotallatency.latest" {$measurement = "storage_latency"}
+            "disk.maxtotallatency.latest" {$measurement = "storage_latency";if($value -ge $latThreshold){$value = 0}}
             "disk.read.average" {$measurement = "disk_through_read"}
             "disk.write.average" {$measurement = "disk_through_write"}
             Default { $measurement = $null }
