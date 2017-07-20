@@ -7,9 +7,10 @@
     .NOTES
         Author: Rudi Martinsen / Intility AS
         Created: 14/06-2017
-        Version 0.5.0
+        Version 0.6.1
         Revised: 20/07-2017
         Changelog:
+        0.6.1 -- Fixed missing unit conversion on cpu_ready
         0.6.0 -- Added override of Disk latency
         0.5.0 -- Moved companycode logic to a function
         0.4.2 -- Fixed bug in companycode
@@ -152,7 +153,7 @@ foreach($vm in $vms){
         }
 
         switch ($stat.MetricId) {
-            "cpu.ready.summation" { $measurement = "cpu_ready";$value = $(($Value / $cpuRdyInt)/$vproc) }
+            "cpu.ready.summation" { $measurement = "cpu_ready";$value = $(($Value / $cpuRdyInt)/$vproc); $unit = "perc" }
             "cpu.latency.average" {$measurement = "cpu_latency" }
             "cpu.usagemhz.average" {$measurement = "cpu_usagemhz" }
             "cpu.usage.average" {$measurement = "cpu_usage" }
