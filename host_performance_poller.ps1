@@ -1,3 +1,4 @@
+#requires -module VMware.PowerCLI
 <#
     .SYNOPSIS
         Script for pulling performance metrics from vCenter and writing to an Influx database
@@ -7,9 +8,14 @@
     .NOTES
         Author: Rudi Martinsen / Intility AS
         Created: 30/06-2017
-        Version 0.4.0
-        Revised: 21/07-2017
+        Version 0.5.4
+        Revised: 28/02-2018
         Changelog:
+        0.5.4 -- Added vmhba for new DL servers
+        0.5.3 -- Added metrics (adapter & network totals)
+        0.5.2 -- Added VDI metrics, comes in place if the cluster has VDI in its name
+        0.5.1 -- Added metrics (mem usage, co stop)
+        0.5.0 -- Added connection state
         0.4.0 -- Added error handling on vCenter connection, cleaned some comments and variables
         0.3.0 -- Added storageadapter and CPU Ready to metrics
         0.2.0 -- Changed to entitycount for pollingstat
@@ -90,7 +96,7 @@ catch {
 }
 #Get Hosts
 if($cluster){
-    $vmhosts = Get-Cluster $cluster | Get-VMHost -Server $vcenter | Where-Object {$_.ConnectionState -ne "NotResponding"}
+    $vmhosts = Get-Cluster $cluster -Server $vcenter | Get-VMHost | Where-Object {$_.ConnectionState -ne "NotResponding"}
 }
 else{
     $vmhosts = Get-VMHost -Server $vcenter | Where-Object {$_.ConnectionState -ne "NotResponding"}
@@ -105,7 +111,8 @@ if($hostcount -gt 0){
 $tbl = @()
 
 #The different metrics to fetch
-$metrics = "cpu.totalcapacity.average","cpu.usagemhz.average","cpu.ready.summation","cpu.latency.average","cpu.usage.average","cpu.utilization.average","mem.totalcapacity.average","mem.consumed.average","net.received.average","net.transmitted.average","storageadapter.read.average","storageadapter.write.average"
+$metricsEsxi = "cpu.totalcapacity.average","cpu.usagemhz.average","cpu.ready.summation","cpu.costop.summation","cpu.latency.average","cpu.usage.average","cpu.utilization.average","mem.totalcapacity.average","mem.consumed.average","net.received.average","net.transmitted.average","storageadapter.read.average","storageadapter.write.average","mem.usage.average","net.usage.average","storageAdapter.commandsAveraged.average"
+$metricsVdi = $metricsesxi + "gpu.mem.usage.average","gpu.mem.used.average","gpu.temperature.average","gpu.utilization.average"
 
 foreach($vmhost in $vmhosts){
     $lapStart = get-date
@@ -116,6 +123,16 @@ foreach($vmhost in $vmhosts){
     $cid = $vmhost.ParentId
     $cname = $vmhost.Parent.Name
     $vendor = $vmhost.ExtensionData.Hardware.SystemInfo.Vendor
+    $state = $vmhost.ConnectionState
+
+    if($cname -like "*VDI*"){
+        $vdi = $true
+        $metrics = $metricsvdi
+    }
+    else{
+        $vdi = $false
+        $metrics = $metricsEsxi
+    }
     
     #Get the stats
     $stats = Get-Stat -Entity $vmhost -Realtime -MaxSamples $samples -Stat $metrics
@@ -123,8 +140,8 @@ foreach($vmhost in $vmhosts){
     foreach($stat in $stats){
         $instance = $stat.Instance
 
-        #Metrics will often have values for several instances per entity. Normally they will also have an aggregated instance. We're only interested in that one for now
-        if($instance -or $instance -ne ""){
+        #Metrics will often have values for several instances per entity. Normally they will also have an aggregated instance. We're only interested in that one for now if not VDI metric
+        if($instance -or $instance -ne "" -and $vdi -eq $false){
             continue
         }
             
@@ -138,6 +155,7 @@ foreach($vmhost in $vmhosts){
 
         switch ($stat.MetricId) {
             "cpu.ready.summation" { $measurement = "cpu_ready"; $value = ($_.value / $cpuRdyInt); $unit = "perc" }
+            "cpu.costop.summation" { $measurement = "cpu_costop"; $value = ($_.value / $cpuRdyInt); $unit = "perc" }
             "cpu.totalcapacity.average" { $measurement = "cpu_totalcapacity" }
             "cpu.utilization.average" {$measurement = "cpu_util" }
             "cpu.usagemhz.average" {$measurement = "cpu_usagemhz" }
@@ -145,23 +163,36 @@ foreach($vmhost in $vmhosts){
             "cpu.latency.average" {$measurement = "cpu_latency" }
             "mem.totalcapacity.average" {$measurement = "mem_totalcapacity"}
             "mem.consumed.average" {$measurement = "mem_consumed"}
+            "mem.usage.average" {$measurement = "mem_usage"}
             "net.received.average"  {$measurement = "net_through_receive"}
             "net.transmitted.average"  {$measurement = "net_through_transmit"}
+            "net.usage.average"  {$measurement = "net_through_total"}
+            "gpu.mem.used.average"  {$measurement = "gpu_mem_usedkb";$vdiM=$true}
+            "gpu.mem.usage.average"  {$measurement = "gpu_mem_usage";$vdiM=$true}
+            "gpu.utilization.average"  {$measurement = "gpu_utilization";$vdiM=$true}
+            "gpu.temperature.average"  {$measurement = "gpu_temperature";$vdiM=$true}
             #"storageadapter.read.average"  {$measurement = "stor_through_read"}
             #"storageadapter.write.average"  {$measurement = "stor_through_write"}
             Default { $measurement = $null }
         }
 
         if($measurement -ne $null){
-            $tbl += "$measurement,type=host,host=$hname,hostid=$hid,cluster=$cname,clusterid=$cid,platform=$vcenter,platformid=$vcid,unit=$unit,statinterval=$statinterval value=$Value $stattimestamp"
+            if($vdiM){
+                #Write-Output "VDI! $measurement"
+                $tbl += "$measurement,type=host,host=$hname,hostid=$hid,cluster=$cname,clusterid=$cid,platform=$vcenter,platformid=$vcid,location=$location,unit=$unit,statinterval=$statinterval,state=$state,instance=$instance value=$Value $stattimestamp"
+            }
+            else{
+                $tbl += "$measurement,type=host,host=$hname,hostid=$hid,cluster=$cname,clusterid=$cid,platform=$vcenter,platformid=$vcid,location=$location,unit=$unit,statinterval=$statinterval,state=$state value=$Value $stattimestamp"
+            }
         }
 
     }
     
     #Our environment consists mainly of HPE hosts which have the same adapters. The other hardware have different adapter configs and will be decommissioned soon so we don't care about them
     if($vendor -eq "HP" -or "HPE"){
-        $stats | Where-Object {$_.metricid -eq  "storageadapter.read.average" -and ($_.instance -eq "vmhba0" -or $_.instance -eq "vmhba1")} | Group-Object timestamp | ForEach-Object {$tbl += "stor_through_read,type=host,host=$hname,hostid=$hid,cluster=$cname,clusterid=$cid,platform=$vcenter,platformid=$vcid,unit=KBps,statinterval=$statinterval value=$([int](($_.group[0].value + $_.group[1].value)) ) $(Get-DBTimestamp $_.name)"}
-        $stats | Where-Object {$_.metricid -eq  "storageadapter.write.average" -and ($_.instance -eq "vmhba0" -or $_.instance -eq "vmhba1")} | Group-Object timestamp | ForEach-Object {$tbl += "stor_through_write,type=host,host=$hname,hostid=$hid,cluster=$cname,clusterid=$cid,platform=$vcenter,platformid=$vcid,unit=KBps,statinterval=$statinterval value=$([int](($_.group[0].value + $_.group[1].value)) ) $(Get-DBTimestamp $_.name)"}
+        $stats | Where-Object {$_.metricid -eq  "storageadapter.read.average" -and (($_.instance -eq "vmhba0" -or $_.instance -eq "vmhba1") -or ($_.instance -eq "vmhba33" -or $_.instance -eq "vmhba34"))} | Group-Object timestamp | ForEach-Object {$tbl += "stor_through_read,type=host,host=$hname,hostid=$hid,cluster=$cname,clusterid=$cid,platform=$vcenter,platformid=$vcid,location=$location,unit=KBps,statinterval=$statinterval value=$([int](($_.group[0].value + $_.group[1].value)) ) $(Get-DBTimestamp $_.name)"}
+        $stats | Where-Object {$_.metricid -eq  "storageadapter.write.average" -and (($_.instance -eq "vmhba0" -or $_.instance -eq "vmhba1") -or ($_.instance -eq "vmhba33" -or $_.instance -eq "vmhba34"))} | Group-Object timestamp | ForEach-Object {$tbl += "stor_through_write,type=host,host=$hname,hostid=$hid,cluster=$cname,clusterid=$cid,platform=$vcenter,platformid=$vcid,location=$location,unit=KBps,statinterval=$statinterval value=$([int](($_.group[0].value + $_.group[1].value)) ) $(Get-DBTimestamp $_.name)"}
+        $stats | Where-Object {$_.metricid -eq  "storageAdapter.commandsAveraged.average" -and (($_.instance -eq "vmhba0" -or $_.instance -eq "vmhba1") -or ($_.instance -eq "vmhba33" -or $_.instance -eq "vmhba34"))} | Group-Object timestamp | ForEach-Object {$tbl += "stor_through_write,type=host,host=$hname,hostid=$hid,cluster=$cname,clusterid=$cid,platform=$vcenter,platformid=$vcid,location=$location,unit=KBps,statinterval=$statinterval value=$([int](($_.group[0].value + $_.group[1].value)) ) $(Get-DBTimestamp $_.name)"}
     }
 
     #Calculate lap time
