@@ -1,3 +1,4 @@
+#requires -module VMware.PowerCLI
 <#
     .SYNOPSIS
         Script for pulling performance metrics from vCenter and writing to an Influx database
@@ -7,9 +8,13 @@
     .NOTES
         Author: Rudi Martinsen / Intility AS
         Created: 14/06-2017
-        Version 0.7.1
-        Revised: 20/07-2017
+        Version 0.8.3
+        Revised: 05/03-2018
         Changelog:
+        0.8.3 -- Added metrics (net,disk,iops total & costop)
+        0.8.2 -- ToUpper on VMName
+        0.8.1 -- Fixed bug in VM selection
+        0.8.0 -- Added datastore as tag
         0.7.1 -- Fixed bug in companycode
         0.7.0 -- Added error handling on vCenter connection, added link to website
         0.6.1 -- Fixed missing unit conversion on cpu_ready
@@ -123,7 +128,7 @@ catch {
 
 #Get VMs
 if($cluster){
-    $vms = Get-Cluster $cluster | Get-VM -Server $vcenter | Where-Object {$_.PowerState -eq "PoweredOn"}
+    $vms = Get-Cluster $cluster -Server $vcenter | Get-VM | Where-Object {$_.PowerState -eq "PoweredOn"}
 }
 else{
     $vms = Get-VM -Server $vcenter | Where-Object {$_.PowerState -eq "PoweredOn"}
@@ -139,7 +144,7 @@ if($vmcount -gt 0){
 $tbl = @()
 
 #The different metrics to fetch
-$metrics = "cpu.ready.summation","cpu.latency.average","cpu.usagemhz.average","cpu.usage.average","mem.active.average","mem.usage.average","net.received.average","net.transmitted.average","disk.maxtotallatency.latest","disk.read.average","disk.write.average","disk.numberReadAveraged.average","disk.numberWriteAveraged.average"
+$metrics = "cpu.ready.summation","cpu.costop.summation","cpu.latency.average","cpu.usagemhz.average","cpu.usage.average","mem.active.average","mem.usage.average","net.received.average","net.transmitted.average","disk.maxtotallatency.latest","disk.read.average","disk.write.average","disk.numberReadAveraged.average","disk.numberWriteAveraged.average","net.usage.average","disk.usage.average","disk.commandsAveraged.average"
 
 foreach($vm in $vms){
     $lapStart = get-date
@@ -152,7 +157,16 @@ foreach($vm in $vms){
     $vname = $vm.name
     $vproc = $vm.NumCpu
     $hname = $vm.VMHost.Name
+    $vname = $vname.toUpper()
     
+    Clear-Variable datastore | Out-Null
+    foreach($dsname in $vm.ExtensionData.Config.DatastoreUrl.Name){
+        if($dsname -ne "iso" -and $dsname -ne "storage"){
+            $datastore = $dsname
+            break
+        }
+    }
+
     #Get the Company Code from the vmname
     $companycode = Get-CompanyCode -vmname $vname
 
@@ -177,6 +191,7 @@ foreach($vm in $vms){
 
         switch ($stat.MetricId) {
             "cpu.ready.summation" { $measurement = "cpu_ready";$value = $(($Value / $cpuRdyInt)/$vproc); $unit = "perc" }
+            "cpu.costop.summation" { $measurement = "cpu_costop";$value = $(($Value / $cpuRdyInt)/$vproc); $unit = "perc" }
             "cpu.latency.average" {$measurement = "cpu_latency" }
             "cpu.usagemhz.average" {$measurement = "cpu_usagemhz" }
             "cpu.usage.average" {$measurement = "cpu_usage" }
@@ -184,21 +199,24 @@ foreach($vm in $vms){
             "mem.usage.average" {$measurement = "mem_usage" }
             "net.received.average"  {$measurement = "net_through_receive"}
             "net.transmitted.average"  {$measurement = "net_through_transmit"}
+            "net.usage.average"  {$measurement = "net_through_total"}
             "disk.maxtotallatency.latest" {$measurement = "storage_latency";if($value -ge $latThreshold){$value = 0}}
             "disk.read.average" {$measurement = "disk_through_read"}
             "disk.write.average" {$measurement = "disk_through_write"}
+            "disk.usage.average" {$measurement = "disk_through_total"}
             Default { $measurement = $null }
         }
 
         if($measurement -ne $null){
-            $tbl += "$measurement,type=vm,vm=$vname,vmid=$vid,companycode=$companycode,host=$hname,hostid=$hid,cluster=$cname,clusterid=$cid,platform=$vcenter,platformid=$vcid,unit=$unit,statinterval=$statinterval value=$Value $stattimestamp"
+            $tbl += "$measurement,type=vm,vm=$vname,vmid=$vid,companycode=$companycode,host=$hname,hostid=$hid,cluster=$cname,clusterid=$cid,platform=$vcenter,platformid=$vcid,datastore=$datastore,unit=$unit,statinterval=$statinterval value=$Value $stattimestamp"
         }
 
     }
     
-    $stats | Where-Object {$_.metricid -eq  "disk.numberReadAveraged.average"} | Group-Object timestamp | ForEach-Object {$tbl += "disk_iops_read,type=vm,vm=$vname,vmid=$vid,companycode=$companycode,host=$hname,hostid=$hid,cluster=$cname,clusterid=$cid,platform=$vcenter,platformid=$vcid,unit=iops,statinterval=$statinterval value=$($_.group) $(Get-DBTimestamp $_.name)"}
-    $stats | Where-Object {$_.metricid -eq  "disk.numberWriteAveraged.average"} | Group-Object timestamp | ForEach-Object {$tbl += "disk_iops_write,type=vm,vm=$vname,vmid=$vid,companycode=$companycode,host=$hname,hostid=$hid,cluster=$cname,clusterid=$cid,platform=$vcenter,platformid=$vcid,unit=iops,statinterval=$statinterval value=$($_.group) $(Get-DBTimestamp $_.name)"}
-    
+    $stats | Where-Object {$_.metricid -eq  "disk.numberReadAveraged.average"} | Group-Object timestamp | ForEach-Object {$tbl += "disk_iops_read,type=vm,vm=$vname,vmid=$vid,companycode=$companycode,host=$hname,hostid=$hid,cluster=$cname,clusterid=$cid,platform=$vcenter,platformid=$vcid,datastore=$datastore,unit=iops,statinterval=$statinterval value=$($_.group) $(Get-DBTimestamp $_.name)"}
+    $stats | Where-Object {$_.metricid -eq  "disk.numberWriteAveraged.average"} | Group-Object timestamp | ForEach-Object {$tbl += "disk_iops_write,type=vm,vm=$vname,vmid=$vid,companycode=$companycode,host=$hname,hostid=$hid,cluster=$cname,clusterid=$cid,platform=$vcenter,platformid=$vcid,datastore=$datastore,unit=iops,statinterval=$statinterval value=$($_.group) $(Get-DBTimestamp $_.name)"}
+    $stats | Where-Object {$_.metricid -eq  "disk.commandsAveraged.average"} | Group-Object timestamp | ForEach-Object {$tbl += "disk_iops_total,type=vm,vm=$vname,vmid=$vid,companycode=$companycode,host=$hname,hostid=$hid,cluster=$cname,clusterid=$cid,platform=$vcenter,platformid=$vcid,datastore=$datastore,unit=iops,statinterval=$statinterval value=$($_.group) $(Get-DBTimestamp $_.name)"}
+
     #Calculate lap time
     $lapStop = get-date
     $timespan = New-TimeSpan -Start $lapStart -End $lapStop
