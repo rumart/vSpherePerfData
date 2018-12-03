@@ -7,3 +7,5 @@ For more details on the project, checkout my blog series: https://www.rudimartin
 The VM and host scripts are explained in more details in http://www.rudimartinsen.com/2017/07/17/vsphere-performance-data-part-5-the-script/
 
 The VSAN scripts are covered in http://www.rudimartinsen.com/2017/07/17/vsphere-performance-data-part-5-the-script/
+
+The VCSA scripts and dashboard is explained in https://www.rudimartinsen.com/2018/12/03/vsphere-performance-vcenter-server-appliance-vcsa-monitoring/
