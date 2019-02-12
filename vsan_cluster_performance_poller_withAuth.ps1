@@ -7,12 +7,14 @@
     .NOTES
         Author: Rudi Martinsen / Intility AS
         Created: 07/03-2018
-        Version 0.1.2
-        Revised: 06/04-2018
+        Version 0.2.1
+        Revised: 12/02-2019
         Changelog:
-        0.1.2 -- Cleaned unused variables (aa362)
-        0.1.1 -- Added backend stuff (aa362)
-        0.1.0 -- Fork from Host poller (aa362)
+        0.2.1 -- Fixed Read-host on password
+        0.2.0 -- Adding Influx auth support
+        0.1.2 -- Cleaned unused variables
+        0.1.1 -- Added backend stuff
+        0.1.0 -- Fork from Host poller
     .LINK
         http://www.rudimartinsen.com/2018/04/06/vsphere-performance-data-monitoring-vmware-vsan-performance/        
     .PARAMETER VCenter
@@ -42,7 +44,7 @@ param(
     $DBServerPort = 8086,
     $DBServerUserName,
     [securestring]
-    $DBServerUserPass,
+    $DBServerUserPass = (Read-Host -Prompt "Please provide OV password" -AsSecureString),
     $SkipSSL = $true,
     $LogFile
 )
