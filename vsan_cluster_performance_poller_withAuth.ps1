@@ -205,7 +205,7 @@ if($SkipSSL){
     Insecure-SSL
 }
 $insecurePass = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($DBServerUserPass))
-$auth = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($UserName+':'+$insecurePass))
+$auth = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($DBServerUserName+':'+$insecurePass))
 $header = @{
   'Authorization' = "Basic $auth"
 }
