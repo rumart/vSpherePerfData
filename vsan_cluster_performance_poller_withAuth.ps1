@@ -110,7 +110,7 @@ catch {
 }
 #Get VMs
 if($cluster){
-    $clusterObj = Get-Cluster $cluster -ErrorAction Stop -ErrorVariable clustErr
+    $clusterObj = Get-Cluster $cluster | where-Object {$_.VsanEnabled -eq $true} -ErrorAction Stop -ErrorVariable clustErr
 }
 else{
     Write-Output "$(Get-Date) : Couldn't get cluster" | Out-File $LogFile -Append
@@ -126,11 +126,11 @@ $newtbl = @()
 $metricsVsan = "*"
 
 if(!$clusterObj){
-    Write-Output "$(Get-Date) : Cluster not found. Exiting..." | Out-File $LogFile -Append
+    Write-Output "$(Get-Date) : VSAN Cluster not found. Exiting..." | Out-File $LogFile -Append
     break
 }
 
-foreach ($clust in ($clusterObj | where-Object {$_.VsanEnabled -eq $true}){
+foreach ($clust in $clusterObj){
     Write-Output "Working on cluster $($clust.name)"
     $san = $clust.Name
     $sanid = $clust.Id
