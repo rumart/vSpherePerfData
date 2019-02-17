@@ -7,9 +7,10 @@
     .NOTES
         Author: Rudi Martinsen / Intility AS
         Created: 07/03-2018
-        Version 0.2.1
-        Revised: 12/02-2019
+        Version 0.3.0-beta
+        Revised: 17/02-2019
         Changelog:
+        0.3.0-beta -- Added support for multiple clusters (not tested)
         0.2.1 -- Fixed Read-host on password
         0.2.0 -- Adding Influx auth support
         0.1.2 -- Cleaned unused variables
@@ -129,63 +130,65 @@ if(!$clusterObj){
     break
 }
 
-$san = $clusterObj.Name
-$sanid = $clusterObj.Id
-$type = "vsan"
-    
-#Get the stats
-$stats = Get-VsanStat -Entity $clusterObj -Name $metricsVsan -StartTime $lapStart.AddMinutes(-5)
-$space = Get-VsanSpaceUsage -Cluster $cluster
-    
-foreach($stat in $stats){
+foreach ($clust in ($clusterObj | where-Object {$_.VsanEnabled -eq $true}){
+    Write-Output "Working on cluster $($clust.name)"
+    $san = $clust.Name
+    $sanid = $clust.Id
+    $type = "vsan"
         
-    $unit = $stat.Unit
-    #We'll convert microseconds to milliseconds to correspond with "normal" vSphere stats
-    if($unit -eq "Microseconds"){
-        $value = $stat.Value / 1000
-        $unit = "ms"
-    }
-    else{
-        $value = $stat.Value
-    }
-    
-    #Get correct timestamp for InfluxDB
-    $statTimestamp = Get-DBTimestamp $stat.Time
+    #Get the stats
+    $stats = Get-VsanStat -Entity $clust -Name $metricsVsan -StartTime $lapStart.AddMinutes(-5)
+    $space = Get-VsanSpaceUsage -Cluster $clust
+        
+    foreach($stat in $stats){
+            
+        $unit = $stat.Unit
+        #We'll convert microseconds to milliseconds to correspond with "normal" vSphere stats
+        if($unit -eq "Microseconds"){
+            $value = $stat.Value / 1000
+            $unit = "ms"
+        }
+        else{
+            $value = $stat.Value
+        }
+        
+        #Get correct timestamp for InfluxDB
+        $statTimestamp = Get-DBTimestamp $stat.Time
 
-    if($unit -eq "%"){
-        $unit="perc"
-    }
-    switch ($stat.Name) {
-        "VMConsumption.ReadThroughput" { $measurement = "kB_read"; $value = ($value / 1024); $unit = "KBps" }
-        "VMConsumption.AverageReadLatency" { $measurement = "latency_read"; }
-        "VMConsumption.WriteThroughput" { $measurement = "kB_write"; $value = ($value / 1024); $unit = "KBps" }
-        "VMConsumption.AverageWriteLatency" { $measurement = "latency_write"; }
-        "VMConsumption.Congestion" {$measurement = "congestion"; $unit = "count" }
-        "VMConsumption.OutstandingIO" { $measurement = "io_outstanding"; $unit = "count" }
-        "VMConsumption.ReadIops" { $measurement = "io_read"; $unit = "iops" }
-        "VMConsumption.WriteIops" { $measurement = "io_write"; $unit = "iops" }
-        "Backend.ResyncReadLatency" { $measurement = "latency_resync_read"; }
-        "Backend.ReadThroughput" { $measurement = "kB_read_backend"; $value = ($value / 1024); $unit = "KBps" }
-        "Backend.AverageReadLatency" { $measurement = "latency_read_backend"; }
-        "Backend.WriteThroughput" { $measurement = "kB_write_backend"; $value = ($value / 1024); $unit = "KBps" }
-        "Backend.AverageWriteLatency" { $measurement = "latency_write_backend"; }
-        "Backend.Congestion" {$measurement = "congestion_backend"; $unit = "count" }
-        "Backend.OutstandingIO" { $measurement = "io_outstanding_backend"; $unit = "count" }
-        "Backend.RecoveryWriteIops" { $measurement = "io_write_recovery"; $unit = "iops" }
-        "Backend.RecoveryWriteThroughput" { $measurement = "kb_write_recovery"; $value = ($value / 1024); $unit = "KBps" }
-        "Backend.RecoveryWriteAverageLatency" { $measurement = "latency_write_recovery"; }
-        Default { $measurement = $null }
+        if($unit -eq "%"){
+            $unit="perc"
+        }
+        switch ($stat.Name) {
+            "VMConsumption.ReadThroughput" { $measurement = "kB_read"; $value = ($value / 1024); $unit = "KBps" }
+            "VMConsumption.AverageReadLatency" { $measurement = "latency_read"; }
+            "VMConsumption.WriteThroughput" { $measurement = "kB_write"; $value = ($value / 1024); $unit = "KBps" }
+            "VMConsumption.AverageWriteLatency" { $measurement = "latency_write"; }
+            "VMConsumption.Congestion" {$measurement = "congestion"; $unit = "count" }
+            "VMConsumption.OutstandingIO" { $measurement = "io_outstanding"; $unit = "count" }
+            "VMConsumption.ReadIops" { $measurement = "io_read"; $unit = "iops" }
+            "VMConsumption.WriteIops" { $measurement = "io_write"; $unit = "iops" }
+            "Backend.ResyncReadLatency" { $measurement = "latency_resync_read"; }
+            "Backend.ReadThroughput" { $measurement = "kB_read_backend"; $value = ($value / 1024); $unit = "KBps" }
+            "Backend.AverageReadLatency" { $measurement = "latency_read_backend"; }
+            "Backend.WriteThroughput" { $measurement = "kB_write_backend"; $value = ($value / 1024); $unit = "KBps" }
+            "Backend.AverageWriteLatency" { $measurement = "latency_write_backend"; }
+            "Backend.Congestion" {$measurement = "congestion_backend"; $unit = "count" }
+            "Backend.OutstandingIO" { $measurement = "io_outstanding_backend"; $unit = "count" }
+            "Backend.RecoveryWriteIops" { $measurement = "io_write_recovery"; $unit = "iops" }
+            "Backend.RecoveryWriteThroughput" { $measurement = "kb_write_recovery"; $value = ($value / 1024); $unit = "KBps" }
+            "Backend.RecoveryWriteAverageLatency" { $measurement = "latency_write_recovery"; }
+            Default { $measurement = $null }
+        }
+
+        if($measurement -ne $null){
+            $newtbl += "$measurement,type=$type,san=$san,sanid=$sanid,platform=$vcenter,platformid=$vcid,unit=$unit,statinterval=$statinterval value=$Value $stattimestamp"
+        }
     }
 
-    if($measurement -ne $null){
-        $newtbl += "$measurement,type=$type,san=$san,sanid=$sanid,platform=$vcenter,platformid=$vcid,unit=$unit,statinterval=$statinterval value=$Value $stattimestamp"
+    if($space){
+        $newtbl += "vsan_diskusage,type=$type,san=$san,sanid=$sanid,platform=$vcenter,platformid=$vcid,unit=GB,statinterval=$statinterval freespace=$([int]$space.freespacegb),capacity=$([int]$space.CapacityGB),primaryvmdata=$([int]$space.PrimaryVMDataGB),vdiskusage=$([int]$space.VirtualDiskUsageGB),vsanoverhead=$([int]$space.VsanOverheadGB),vmhomeusage=$([int]$space.VMHomeUsageGB) $stattimestamp"
     }
 }
-
-if($space){
-    $newtbl += "vsan_diskusage,type=$type,san=$san,sanid=$sanid,platform=$vcenter,platformid=$vcid,unit=GB,statinterval=$statinterval freespace=$([int]$space.freespacegb),capacity=$([int]$space.CapacityGB),primaryvmdata=$([int]$space.PrimaryVMDataGB),vdiskusage=$([int]$space.VirtualDiskUsageGB),vsanoverhead=$([int]$space.VsanOverheadGB),vmhomeusage=$([int]$space.VMHomeUsageGB) $stattimestamp"
-}
-
 #Disconnect from vCenter
 Disconnect-VIServer $vcenter -Confirm:$false    
 
