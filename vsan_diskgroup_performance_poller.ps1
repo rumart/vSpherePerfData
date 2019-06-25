@@ -7,17 +7,18 @@
     .NOTES
         Author: Rudi Martinsen / Intility AS
         Created: 02/04-2018
-        Version 0.1.1
-        Revised: 06/04-2018
+        Version 0.2.0
+        Revised: 25/06-2019
         Changelog:
-        0.1.1 -- Cleaned unused variables (aa362)
-        0.1.0 -- Fork from Host poller (aa362)
+        0.2.0 -- Support for multiple clusters
+        0.1.1 -- Cleaned unused variables
+        0.1.0 -- Fork from Host poller
     .LINK
         http://www.rudimartinsen.com/2018/04/06/vsphere-performance-data-monitoring-vmware-vsan-performance/       
     .PARAMETER VCenter
         The vCenter to connect to
     .PARAMETER Cluster
-        The Cluster to get Hosts from. If omitted all Hosts in the vCenter will be fetched
+        The Cluster to get stats from. If omitted all VSAN clusters in the vCenter will be fetched
     .PARAMETER Targetname
         Optional name of the target for use as a Tag in the Influx record
     .PARAMETER DBServer
@@ -30,7 +31,7 @@
 param(
     [Parameter(Mandatory=$true)]
     $VCenter,
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$false)]
     $Cluster,
     $Targetname,
     $Dbserver,
@@ -52,7 +53,7 @@ if(!$LogFile){
 $start = Get-Date
 
 #Import PowerCLI
-Import-Module VMware.VimAutomation.Core
+#Import-Module VMware.VimAutomation.Core
 Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -ParticipateInCeip:$false -Scope Session -Confirm:$false
 
 #Vstatinterval is based on the realtime performance metrics gathered from vCenter which is 20 seconds
@@ -81,20 +82,17 @@ catch {
 }
 
 if($cluster){
-    $clusterObj = Get-Cluster $cluster -ErrorAction Stop -ErrorVariable clustErr #| Get-VMHost -Server $vcenter | Where-Object {$_.ConnectionState -ne "NotResponding"}
+    $clusterObjects = Get-Cluster $cluster -ErrorAction Stop -ErrorVariable clustErr
 }
 else{
-    Write-Output "$(Get-Date) : Couldn't get cluster" | Out-File $LogFile -Append
-    Write-Output "$(Get-Date) : Error message was: $($clustErr.message)" | Out-File $LogFile -Append
-    break
+    $clusterObjects = Get-Cluster | Where-Object {$_.VsanEnabled}
+    Write-Output "Found $($clusterObjects.count) clusters"
 }
 
-if(!$clusterObj){
+if(!$clusterObjects){
     Write-Output "$(Get-Date) : Cluster not found. Exiting..." | Out-File $LogFile -Append
     break
 }
-
-$diskGroups = Get-VsanDiskGroup -Cluster $cluster
 
 #Table to store data
 $newtbl = @()
@@ -103,75 +101,80 @@ $newtbl = @()
 #$metricsVsan = "Performance.ReadCacheWriteIops","Performance.WriteBufferReadIops","Performance.ReadCacheReadIops","Performance.WriteBufferWriteIops","Performance.ReadThroughput","Performance.WriteThroughput","Performance.ReadCacheReadLatency","Performance.AverageReadLatency","Performance.AverageWriteLatency","Backend.ReadThroughput","Backend.AverageReadLatency","Backend.WriteThroughput","Backend.AverageWriteLatency","Backend.Congestion","Backend.OutstandingIO","Backend.RecoveryWriteIops","Backend.RecoveryWriteThroughput","Backend.RecoveryWriteAverageLatency"
 $metricsVsan = "*"
 
-foreach($dg in $diskGroups){
+foreach($clusterObj in $clusterObjects){
+    $diskGroups = Get-VsanDiskGroup -Cluster $clusterObj
 
-    $lapStart = get-date
-    
-    $vmhost = $dg.vmhost.name
+    foreach($dg in $diskGroups){
 
-    #Build variables for "metadata"    
-    $name = $dg.Name.Replace(" ","_")
-    $dgType = $dg.DiskGroupType
-    $san = $clusterObj.Name
-    $sanid = $clusterObj.Id
-    
-    $type = "vsan_diskgroup"
-    
-    #Get the stats
-    $stats = Get-VsanStat -Entity $dg -Name $metricsVsan -StartTime $lapStart.AddMinutes(-5)
-    
-    foreach($stat in $stats){
-            
-        $unit = $stat.Unit
-        #We'll convert microseconds to milliseconds to correspond with "normal" vSphere stats
-        if($unit -eq "Microseconds"){
-            $value = $stat.Value / 1000
-            $unit = "ms"
-        }
-        else{
-            $value = $stat.Value
-        }
-
-        #Get correct timestamp for InfluxDB
-        $statTimestamp = Get-DBTimestamp $stat.Time
-
-        if($unit -eq "%"){
-            $unit="perc"
-        }
-        switch ($stat.Name) {
-            "Performance.ReadCacheWriteIops" { $measurement = "io_read"; $unit = "iops" }
-            "Performance.WriteBufferReadIops" { $measurement = "io_write"; $unit = "iops" }
-            "Performance.ReadCacheReadIops" { $measurement = "io_readcache_read"; $unit = "iops" }
-            "Performance.WriteBufferWriteIops" { $measurement = "io_writebuffer_write"; $unit = "iops" }
-            "Performance.ReadThroughput" {$measurement = "kB_read"; $value = ($value / 1024); $unit = "KBps" }
-            "Performance.WriteThroughput" { $measurement = "kB_write"; $value = ($value / 1024); $unit = "KBps" }
-            "Performance.AverageReadLatency" { $measurement = "latency_read"; $unit = "ms" }
-            "Performance.AverageWriteLatency" { $measurement = "latency_write"; $unit = "ms" }
-            "Performance.ReadCacheReadLatency" { $measurement = "latency_readcache_read"; }
-            "Performance.ReadCacheHitRate" { $measurement = "readcache_hitrate"; }
-            "Performance.WriteBufferFreePercentage" { $measurement = "writebuffer_free"; }
-            "Performance.WriteBufferWriteLatency" { $measurement = "latency_writebuffer"; }
-            "Performance.Capacity" { $measurement = "capacity"; $value = $value / 1GB; $unit = "GB" }
-            "Performance.UsedCapacity" { $measurement = "used_capacity"; $value = $value / 1GB; $unit = "GB" }
-            Default { $measurement = $null }
-        }
+        $lapStart = get-date
         
-        if($measurement -ne $null){
-            $newtbl += "$measurement,name=$name,diskgrouptype=$dgType,type=$type,san=$san,sanid=$sanid,platform=$vcenter,platformid=$vcid,unit=$unit,statinterval=$statinterval,host=$vmhost value=$Value $stattimestamp"
+        $vmhost = $dg.vmhost.name
+    
+        #Build variables for "metadata"    
+        $name = $dg.Name.Replace(" ","_")
+        $dgType = $dg.DiskGroupType
+        $san = $clusterObj.Name
+        $sanid = $clusterObj.Id
+        
+        $type = "vsan_diskgroup"
+        
+        #Get the stats
+        $stats = Get-VsanStat -Entity $dg -Name $metricsVsan -StartTime $lapStart.AddMinutes(-5)
+        
+        foreach($stat in $stats){
+                
+            $unit = $stat.Unit
+            #We'll convert microseconds to milliseconds to correspond with "normal" vSphere stats
+            if($unit -eq "Microseconds"){
+                $value = $stat.Value / 1000
+                $unit = "ms"
+            }
+            else{
+                $value = $stat.Value
+            }
+    
+            #Get correct timestamp for InfluxDB
+            $statTimestamp = Get-DBTimestamp $stat.Time
+    
+            if($unit -eq "%"){
+                $unit="perc"
+            }
+            switch ($stat.Name) {
+                "Performance.ReadCacheWriteIops" { $measurement = "io_read"; $unit = "iops" }
+                "Performance.WriteBufferReadIops" { $measurement = "io_write"; $unit = "iops" }
+                "Performance.ReadCacheReadIops" { $measurement = "io_readcache_read"; $unit = "iops" }
+                "Performance.WriteBufferWriteIops" { $measurement = "io_writebuffer_write"; $unit = "iops" }
+                "Performance.ReadThroughput" {$measurement = "kB_read"; $value = ($value / 1024); $unit = "KBps" }
+                "Performance.WriteThroughput" { $measurement = "kB_write"; $value = ($value / 1024); $unit = "KBps" }
+                "Performance.AverageReadLatency" { $measurement = "latency_read"; $unit = "ms" }
+                "Performance.AverageWriteLatency" { $measurement = "latency_write"; $unit = "ms" }
+                "Performance.ReadCacheReadLatency" { $measurement = "latency_readcache_read"; }
+                "Performance.ReadCacheHitRate" { $measurement = "readcache_hitrate"; }
+                "Performance.WriteBufferFreePercentage" { $measurement = "writebuffer_free"; }
+                "Performance.WriteBufferWriteLatency" { $measurement = "latency_writebuffer"; }
+                "Performance.Capacity" { $measurement = "capacity"; $value = $value / 1GB; $unit = "GB" }
+                "Performance.UsedCapacity" { $measurement = "used_capacity"; $value = $value / 1GB; $unit = "GB" }
+                Default { $measurement = $null }
+            }
+            
+            if($measurement -ne $null){
+                $newtbl += "$measurement,name=$name,diskgrouptype=$dgType,type=$type,san=$san,sanid=$sanid,platform=$vcenter,platformid=$vcid,unit=$unit,statinterval=$statinterval,host=$vmhost value=$Value $stattimestamp"
+            }
         }
+    
+        #Calculate lap time
+        $lapStop = get-date
+        $timespan = New-TimeSpan -Start $lapStart -End $lapStop
+        #Write-Output $timespan.TotalSeconds
     }
 
-    #Calculate lap time
-    $lapStop = get-date
-    $timespan = New-TimeSpan -Start $lapStart -End $lapStop
-    Write-Output $timespan.TotalSeconds
 }
 
 #Disconnect from vCenter
 Disconnect-VIServer $vcenter -Confirm:$false    
 
 #Calculate runtime
-$stop = get-date
+$stop = Get-Date
 $runTimespan = New-TimeSpan -Start $start -End $stop
 
 Write-Output "Run $run took $($runTimespan.TotalSeconds) seconds"

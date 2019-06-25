@@ -7,10 +7,17 @@
     .NOTES
         Author: Rudi Martinsen / Intility AS
         Created: 07/03-2018
+<<<<<<< HEAD
+        Version 0.3.0
+        Revised: 25/06-2019
+        Changelog:
+        0.3.0 -- Added support for multiple clusters
+=======
         Version 0.3.0-beta
         Revised: 17/02-2019
         Changelog:
         0.3.0-beta -- Added support for multiple clusters (not tested)
+>>>>>>> dc1f8f502eff2622bd72092906443782be8f2815
         0.2.1 -- Fixed Read-host on password
         0.2.0 -- Adding Influx auth support
         0.1.2 -- Cleaned unused variables
@@ -21,7 +28,7 @@
     .PARAMETER VCenter
         The vCenter to connect to
     .PARAMETER Cluster
-        The Cluster to get Hosts from. If omitted all Hosts in the vCenter will be fetched
+        The Cluster to get stats from. If omitted all VSAN clusters in the vCenter will be fetched
     .PARAMETER Targetname
         Optional name of the target for use as a Tag in the Influx record
     .PARAMETER DBServer
@@ -38,14 +45,14 @@
 param(
     [Parameter(Mandatory=$true)]
     $VCenter,
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$false)]
     $Cluster,
     $Targetname,
     $DBServer,
     $DBServerPort = 8086,
     $DBServerUserName,
     [securestring]
-    $DBServerUserPass = (Read-Host -Prompt "Please provide OV password" -AsSecureString),
+    $DBServerUserPass = (Read-Host -Prompt "Please provide password" -AsSecureString),
     $SkipSSL = $true,
     $LogFile
 )
@@ -81,7 +88,7 @@ if(!$LogFile){
 $start = Get-Date
 
 #Import PowerCLI
-Import-Module VMware.VimAutomation.Core
+#Import-Module VMware.VimAutomation.Core
 Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -ParticipateInCeip:$false -Scope Session -Confirm:$false
 
 #Vstatinterval is based on the realtime performance metrics gathered from vCenter which is 20 seconds
@@ -108,14 +115,18 @@ catch {
     Write-Output "$(Get-Date) : Error message was: $($vcerr.message)" | Out-File $LogFile -Append
     break
 }
-#Get VMs
+
+#Get VSAN clusters
 if($cluster){
+<<<<<<< HEAD
+    $clusterObjects = Get-Cluster $cluster -ErrorAction Stop -ErrorVariable clustErr
+=======
     $clusterObj = Get-Cluster $cluster | where-Object {$_.VsanEnabled -eq $true} -ErrorAction Stop -ErrorVariable clustErr
+>>>>>>> dc1f8f502eff2622bd72092906443782be8f2815
 }
 else{
-    Write-Output "$(Get-Date) : Couldn't get cluster" | Out-File $LogFile -Append
-    Write-Output "$(Get-Date) : Error message was: $($clustErr.message)" | Out-File $LogFile -Append
-    break
+    $clusterObjects = Get-Cluster | Where-Object {$_.VsanEnabled}
+    Write-Output "Found $($clusterObjects.count) clusters"
 }
 
 #Table to store data
@@ -125,6 +136,22 @@ $newtbl = @()
 #$metricsVsan = "VMConsumption.ReadThroughput","VMConsumption.AverageReadLatency","VMConsumption.WriteThroughput","VMConsumption.AverageWriteLatency","VMConsumption.Congestion","VMConsumption.OutstandingIO"
 $metricsVsan = "*"
 
+<<<<<<< HEAD
+if(!$clusterObjects){
+    Write-Output "$(Get-Date) : Cluster not found. Exiting..." | Out-File $LogFile -Append
+    break
+}
+
+foreach($clusterObj in $clusterObjects){
+    Write-Output "Processing VSAN cluster $($clusterObj.Name)"
+    $san = $clusterObj.Name
+    $sanid = $clusterObj.Id
+    $type = "vsan"
+        
+    #Get the stats
+    $stats = Get-VsanStat -Entity $clusterObj -Name $metricsVsan -StartTime $lapStart.AddMinutes(-5)
+    $space = Get-VsanSpaceUsage -Cluster $clusterObj
+=======
 if(!$clusterObj){
     Write-Output "$(Get-Date) : VSAN Cluster not found. Exiting..." | Out-File $LogFile -Append
     break
@@ -139,6 +166,7 @@ foreach ($clust in $clusterObj){
     #Get the stats
     $stats = Get-VsanStat -Entity $clust -Name $metricsVsan -StartTime $lapStart.AddMinutes(-5)
     $space = Get-VsanSpaceUsage -Cluster $clust
+>>>>>>> dc1f8f502eff2622bd72092906443782be8f2815
         
     foreach($stat in $stats){
             
@@ -223,4 +251,3 @@ $pollStatQry = "pollingstat,poller=$($env:COMPUTERNAME),unit=s,type=vsanpoll,tar
 
 #Write data about the run
 Invoke-RestMethod -Method Post -Uri $postUri -Body $pollStatQry
-

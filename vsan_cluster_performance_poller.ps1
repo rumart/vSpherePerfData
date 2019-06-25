@@ -7,18 +7,19 @@
     .NOTES
         Author: Rudi Martinsen / Intility AS
         Created: 07/03-2018
-        Version 0.1.2
-        Revised: 06/04-2018
+        Version 0.2.0
+        Revised: 25/06-2019
         Changelog:
-        0.1.2 -- Cleaned unused variables (aa362)
-        0.1.1 -- Added backend stuff (aa362)
-        0.1.0 -- Fork from Host poller (aa362)
+        0.2.0 -- Support for multiple clusters
+        0.1.2 -- Cleaned unused variables
+        0.1.1 -- Added backend stuff
+        0.1.0 -- Fork from Host poller
     .LINK
         http://www.rudimartinsen.com/2018/04/06/vsphere-performance-data-monitoring-vmware-vsan-performance/        
     .PARAMETER VCenter
         The vCenter to connect to
     .PARAMETER Cluster
-        The Cluster to get Hosts from. If omitted all Hosts in the vCenter will be fetched
+        The Cluster to get stats from. If omitted all VSAN clusters in the vCenter will be fetched
     .PARAMETER Targetname
         Optional name of the target for use as a Tag in the Influx record
     .PARAMETER DBServer
@@ -31,7 +32,7 @@
 param(
     [Parameter(Mandatory=$true)]
     $VCenter,
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$false)]
     $Cluster,
     $Targetname,
     $Dbserver,
@@ -53,7 +54,7 @@ if(!$LogFile){
 $start = Get-Date
 
 #Import PowerCLI
-Import-Module VMware.VimAutomation.Core
+#Import-Module VMware.VimAutomation.Core
 Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -ParticipateInCeip:$false -Scope Session -Confirm:$false
 
 #Vstatinterval is based on the realtime performance metrics gathered from vCenter which is 20 seconds
@@ -80,14 +81,14 @@ catch {
     Write-Output "$(Get-Date) : Error message was: $($vcerr.message)" | Out-File $LogFile -Append
     break
 }
-#Get VMs
+
+#Get VSAN clusters
 if($cluster){
-    $clusterObj = Get-Cluster $cluster -ErrorAction Stop -ErrorVariable clustErr
+    $clusterObjects = Get-Cluster $cluster -ErrorAction Stop -ErrorVariable clustErr
 }
 else{
-    Write-Output "$(Get-Date) : Couldn't get cluster" | Out-File $LogFile -Append
-    Write-Output "$(Get-Date) : Error message was: $($clustErr.message)" | Out-File $LogFile -Append
-    break
+    $clusterObjects = Get-Cluster | Where-Object {$_.VsanEnabled}
+    Write-Output "Found $($clusterObjects.count) clusters"
 }
 
 #Table to store data
@@ -97,68 +98,69 @@ $newtbl = @()
 #$metricsVsan = "VMConsumption.ReadThroughput","VMConsumption.AverageReadLatency","VMConsumption.WriteThroughput","VMConsumption.AverageWriteLatency","VMConsumption.Congestion","VMConsumption.OutstandingIO"
 $metricsVsan = "*"
 
-if(!$clusterObj){
+if(!$clusterObjects){
     Write-Output "$(Get-Date) : Cluster not found. Exiting..." | Out-File $LogFile -Append
     break
 }
+foreach($clusterObj in $clusterObjects){
+    Write-Output "Processing VSAN cluster $($clusterObj.Name)"
+    $san = $clusterObj.Name
+    $sanid = $clusterObj.Id
+    $type = "vsan"
 
-$san = $clusterObj.Name
-$sanid = $clusterObj.Id
-$type = "vsan"
-    
-#Get the stats
-$stats = Get-VsanStat -Entity $clusterObj -Name $metricsVsan -StartTime $lapStart.AddMinutes(-5)
-$space = Get-VsanSpaceUsage -Cluster $cluster
-    
-foreach($stat in $stats){
+    #Get the stats
+    $stats = Get-VsanStat -Entity $clusterObj -Name $metricsVsan -StartTime $start.AddMinutes(-5)
+    $space = Get-VsanSpaceUsage -Cluster $san
         
-    $unit = $stat.Unit
-    #We'll convert microseconds to milliseconds to correspond with "normal" vSphere stats
-    if($unit -eq "Microseconds"){
-        $value = $stat.Value / 1000
-        $unit = "ms"
-    }
-    else{
-        $value = $stat.Value
-    }
-    
-    #Get correct timestamp for InfluxDB
-    $statTimestamp = Get-DBTimestamp $stat.Time
+    foreach($stat in $stats){
+            
+        $unit = $stat.Unit
+        #We'll convert microseconds to milliseconds to correspond with "normal" vSphere stats
+        if($unit -eq "Microseconds"){
+            $value = $stat.Value / 1000
+            $unit = "ms"
+        }
+        else{
+            $value = $stat.Value
+        }
+        
+        #Get correct timestamp for InfluxDB
+        $statTimestamp = Get-DBTimestamp $stat.Time
 
-    if($unit -eq "%"){
-        $unit="perc"
-    }
-    switch ($stat.Name) {
-        "VMConsumption.ReadThroughput" { $measurement = "kB_read"; $value = ($value / 1024); $unit = "KBps" }
-        "VMConsumption.AverageReadLatency" { $measurement = "latency_read"; }
-        "VMConsumption.WriteThroughput" { $measurement = "kB_write"; $value = ($value / 1024); $unit = "KBps" }
-        "VMConsumption.AverageWriteLatency" { $measurement = "latency_write"; }
-        "VMConsumption.Congestion" {$measurement = "congestion"; $unit = "count" }
-        "VMConsumption.OutstandingIO" { $measurement = "io_outstanding"; $unit = "count" }
-        "VMConsumption.ReadIops" { $measurement = "io_read"; $unit = "iops" }
-        "VMConsumption.WriteIops" { $measurement = "io_write"; $unit = "iops" }
-        "Backend.ResyncReadLatency" { $measurement = "latency_resync_read"; }
-        "Backend.ReadThroughput" { $measurement = "kB_read_backend"; $value = ($value / 1024); $unit = "KBps" }
-        "Backend.AverageReadLatency" { $measurement = "latency_read_backend"; }
-        "Backend.WriteThroughput" { $measurement = "kB_write_backend"; $value = ($value / 1024); $unit = "KBps" }
-        "Backend.AverageWriteLatency" { $measurement = "latency_write_backend"; }
-        "Backend.Congestion" {$measurement = "congestion_backend"; $unit = "count" }
-        "Backend.OutstandingIO" { $measurement = "io_outstanding_backend"; $unit = "count" }
-        "Backend.RecoveryWriteIops" { $measurement = "io_write_recovery"; $unit = "iops" }
-        "Backend.RecoveryWriteThroughput" { $measurement = "kb_write_recovery"; $value = ($value / 1024); $unit = "KBps" }
-        "Backend.RecoveryWriteAverageLatency" { $measurement = "latency_write_recovery"; }
-        Default { $measurement = $null }
+        if($unit -eq "%"){
+            $unit="perc"
+        }
+        switch ($stat.Name) {
+            "VMConsumption.ReadThroughput" { $measurement = "kB_read"; $value = ($value / 1024); $unit = "KBps" }
+            "VMConsumption.AverageReadLatency" { $measurement = "latency_read"; }
+            "VMConsumption.WriteThroughput" { $measurement = "kB_write"; $value = ($value / 1024); $unit = "KBps" }
+            "VMConsumption.AverageWriteLatency" { $measurement = "latency_write"; }
+            "VMConsumption.Congestion" {$measurement = "congestion"; $unit = "count" }
+            "VMConsumption.OutstandingIO" { $measurement = "io_outstanding"; $unit = "count" }
+            "VMConsumption.ReadIops" { $measurement = "io_read"; $unit = "iops" }
+            "VMConsumption.WriteIops" { $measurement = "io_write"; $unit = "iops" }
+            "Backend.ResyncReadLatency" { $measurement = "latency_resync_read"; }
+            "Backend.ReadThroughput" { $measurement = "kB_read_backend"; $value = ($value / 1024); $unit = "KBps" }
+            "Backend.AverageReadLatency" { $measurement = "latency_read_backend"; }
+            "Backend.WriteThroughput" { $measurement = "kB_write_backend"; $value = ($value / 1024); $unit = "KBps" }
+            "Backend.AverageWriteLatency" { $measurement = "latency_write_backend"; }
+            "Backend.Congestion" {$measurement = "congestion_backend"; $unit = "count" }
+            "Backend.OutstandingIO" { $measurement = "io_outstanding_backend"; $unit = "count" }
+            "Backend.RecoveryWriteIops" { $measurement = "io_write_recovery"; $unit = "iops" }
+            "Backend.RecoveryWriteThroughput" { $measurement = "kb_write_recovery"; $value = ($value / 1024); $unit = "KBps" }
+            "Backend.RecoveryWriteAverageLatency" { $measurement = "latency_write_recovery"; }
+            Default { $measurement = $null }
+        }
+
+        if($measurement -ne $null){
+            $newtbl += "$measurement,type=$type,san=$san,sanid=$sanid,platform=$vcenter,platformid=$vcid,unit=$unit,statinterval=$statinterval value=$Value $stattimestamp"
+        }
     }
 
-    if($measurement -ne $null){
-        $newtbl += "$measurement,type=$type,san=$san,sanid=$sanid,platform=$vcenter,platformid=$vcid,unit=$unit,statinterval=$statinterval value=$Value $stattimestamp"
+    if($space){
+        $newtbl += "vsan_diskusage,type=$type,san=$san,sanid=$sanid,platform=$vcenter,platformid=$vcid,unit=GB,statinterval=$statinterval freespace=$([int]$space.freespacegb),capacity=$([int]$space.CapacityGB),primaryvmdata=$([int]$space.PrimaryVMDataGB),vdiskusage=$([int]$space.VirtualDiskUsageGB),vsanoverhead=$([int]$space.VsanOverheadGB),vmhomeusage=$([int]$space.VMHomeUsageGB) $stattimestamp"
     }
 }
-
-if($space){
-    $newtbl += "vsan_diskusage,type=$type,san=$san,sanid=$sanid,platform=$vcenter,platformid=$vcid,unit=GB,statinterval=$statinterval freespace=$([int]$space.freespacegb),capacity=$([int]$space.CapacityGB),primaryvmdata=$([int]$space.PrimaryVMDataGB),vdiskusage=$([int]$space.VirtualDiskUsageGB),vsanoverhead=$([int]$space.VsanOverheadGB),vmhomeusage=$([int]$space.VMHomeUsageGB) $stattimestamp"
-}
-
 #Disconnect from vCenter
 Disconnect-VIServer $vcenter -Confirm:$false    
 
@@ -183,4 +185,3 @@ $pollStatQry = "pollingstat,poller=$($env:COMPUTERNAME),unit=s,type=vsanpoll,tar
 
 #Write data about the run
 Invoke-RestMethod -Method Post -Uri $postUri -Body $pollStatQry
-
